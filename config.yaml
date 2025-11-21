@@ -1,0 +1,429 @@
+global_settings:
+  default_timeout: 30
+  cooldown_period: 2
+  results_dir: "results"
+
+tools:
+  docker:
+    image: "isolation_env:latest"
+    runtime_gvisor: "runsc"
+    runtime_kata: "io.containerd.kata.v2"
+  qemu:
+    image_path: "{.qcow2 PATH}"
+    ssh_port: 2222
+    ssh_user: "{SSH LOGIN}"
+    ssh_pass: "{SSH PASSWORD}"
+  nsjail:
+    path: "/usr/local/bin/nsjail"
+    rootfs: "{NSJAIL ROOTFS}" # change it
+
+experiments:
+  # ========================================
+  # CATEGORY 0: PERFORMANCE BASELINE
+  # ========================================
+  
+  - id: "T0.1_CPU_Perf"
+    description: "CPU performance baseline (sysbench prime calculation)"
+    payload_cmd: "sysbench cpu --cpu-max-prime=10000 run"
+    validation:
+      strategy: "standard"
+    runs:
+      - { run_id: "docker_baseline", tool: "docker", config: "baseline", params: "" }
+      - { run_id: "gvisor_baseline", tool: "gvisor", config: "baseline", params: "" }
+      - { run_id: "nsjail_baseline", tool: "nsjail", config: "baseline", params: "-E LANG=C.UTF-8" }
+
+  - id: "T0.2_IO_Perf"
+    description: "Disk I/O performance baseline"
+    payload_cmd: "dd if=/dev/zero of=/tmp/test.img bs=1M count=100 conv=fdatasync 2>&1 | grep -E 'copied|MB/s'"
+    validation:
+      strategy: "io_performance"
+      params:
+        min_throughput_mbs: 50.0  # Minimum acceptable MB/s
+        expect_completion: true
+    runs:
+      - { run_id: "docker_baseline", tool: "docker", config: "baseline", params: "" }
+      - { run_id: "gvisor_baseline", tool: "gvisor", config: "baseline", params: "" }
+
+  # ========================================
+  # CATEGORY 1: RESOURCE EXHAUSTION
+  # ========================================
+  
+  - id: "T1.1_Fork_Bomb"
+    description: "Fork bomb - PID namespace isolation"
+    payload_cmd: "sleep 1 && /bin/fork_bomb"
+    validation:
+      strategy: "containment_pids"
+      params:
+        max_pid_growth: 200
+        timeout_pid_threshold: 200
+        strict_mode: false
+    runs:
+      - { run_id: "docker_weak", tool: "docker", config: "weak", params: "--pid=host" }
+      - { run_id: "docker_strong", tool: "docker", config: "strong", params: "--pids-limit=100" }
+      - { run_id: "gvisor_default", tool: "gvisor", config: "strong", params: "" }
+      - { run_id: "nsjail_strong", tool: "nsjail", config: "strong", params: "--cgroup_pids_max=100" }
+
+  - id: "T1.2_Memory_Hog"
+    description: "Memory exhaustion - cgroup memory limits"
+    payload_cmd: "sleep 1 && /bin/memory_hog"
+    validation:
+      strategy: "expect_oom"
+      params:
+        oom_codes: [137, 143, 9]
+        oom_keywords: ["Killed", "OOM", "memory", "Cannot allocate"]
+        allow_any_nonzero: true
+    runs:
+      - { run_id: "docker_weak", tool: "docker", config: "weak", params: "" }
+      - { run_id: "docker_strong", tool: "docker", config: "strong", params: "-m 256m" }
+      - { run_id: "gvisor_strong", tool: "gvisor", config: "strong", params: "-m 256m" }
+
+  - id: "T1.3_CPU_Saturation"
+    description: "CPU saturation with multiple threads"
+    payload_cmd: "/bin/cpu_burn 10"  # 10 seconds burn
+    validation:
+      strategy: "cpu_saturation"
+      params:
+        min_cpu_usage: 80.0  # Should see high CPU
+        max_duration_s: 15   # Should complete within time
+    runs:
+      - { run_id: "docker_unlimited", tool: "docker", config: "weak", params: "" }
+      - { run_id: "docker_limited", tool: "docker", config: "strong", params: "--cpus=0.5" }
+      - { run_id: "gvisor_limited", tool: "gvisor", config: "strong", params: "--cpus=0.5" }
+
+  - id: "T1.4_Disk_Bomb"
+    description: "Disk space exhaustion attack"
+    payload_cmd: "/bin/disk_bomb 512"  # Try to fill 512MB
+    validation:
+      strategy: "disk_exhaustion"
+      params:
+        expect_failure: true  # Should fail if quota works
+        failure_keywords: ["No space left", "Disk quota", "write error"]
+        max_written_mb: 100   # If succeeds, shouldn't write more than this
+    runs:
+      - { run_id: "docker_weak", tool: "docker", config: "weak", params: "" }
+      - { run_id: "docker_quota", tool: "docker", config: "strong", params: "--storage-opt size=64M" }
+
+  # ========================================
+  # CATEGORY 2: FILESYSTEM ISOLATION
+  # ========================================
+  
+  - id: "T2.1_Sys_Write"
+    description: "Attempt to write to /sys (kernel parameters)"
+    payload_cmd: "echo 1 > /sys/kernel/debug/tracing/tracing_on 2>&1"
+    validation:
+      strategy: "expect_fail"
+      params:
+        allowed_errors: ["Permission denied", "Read-only file system", "No such file"]
+    runs:
+      - { run_id: "docker_weak", tool: "docker", config: "weak", params: "" }
+      - { run_id: "docker_readonly", tool: "docker", config: "strong", params: "--read-only" }
+      - { run_id: "gvisor_default", tool: "gvisor", config: "strong", params: "" }
+
+  - id: "T2.2_Dev_Access"
+    description: "Access to sensitive devices (/dev/mem, /dev/kmem)"
+    payload_cmd: "/bin/dev_probe"  # Custom tool to probe devices
+    validation:
+      strategy: "device_isolation"
+      params:
+        blocked_devices: ["/dev/mem", "/dev/kmem", "/dev/port"]
+        expect_all_blocked: true
+    runs:
+      - { run_id: "docker_weak", tool: "docker", config: "weak", params: "--privileged" }
+      - { run_id: "docker_strong", tool: "docker", config: "strong", params: "" }
+      - { run_id: "gvisor_strong", tool: "gvisor", config: "strong", params: "" }
+
+  - id: "T2.3_Root_Write"
+    description: "Attempt to modify host root filesystem"
+    payload_cmd: "touch /rootfs_test 2>&1 && rm /rootfs_test 2>&1"
+    validation:
+      strategy: "expect_fail"
+      params:
+        allowed_errors: ["Permission denied", "Read-only", "No such file"]
+    runs:
+      - { run_id: "docker_normal", tool: "docker", config: "strong", params: "" }
+      - { run_id: "gvisor_normal", tool: "gvisor", config: "strong", params: "" }
+
+  - id: "T2.4_Mount_Escape"
+    description: "Attempt to mount filesystems"
+    payload_cmd: "mkdir -p /tmp/mnt && mount -t tmpfs tmpfs /tmp/mnt 2>&1"
+    validation:
+      strategy: "capability_check"
+      params:
+        blocked_capabilities: ["CAP_SYS_ADMIN"]
+        expect_failure: true
+        failure_keywords: ["Operation not permitted", "Permission denied"]
+    runs:
+      - { run_id: "docker_weak", tool: "docker", config: "weak", params: "--cap-add=SYS_ADMIN" }
+      - { run_id: "docker_strong", tool: "docker", config: "strong", params: "--cap-drop=ALL" }
+      - { run_id: "gvisor_default", tool: "gvisor", config: "strong", params: "" }
+
+  # ========================================
+  # CATEGORY 3: KERNEL & PROC ISOLATION
+  # ========================================
+  
+  - id: "T3.1_Proc_Version"
+    description: "Read /proc/version - kernel info leak"
+    payload_cmd: "cat /proc/version"
+    validation:
+      strategy: "kernel_version"
+    runs:
+      - { run_id: "docker_weak", tool: "docker", config: "weak", params: "" }
+      - { run_id: "gvisor_strong", tool: "gvisor", config: "strong", params: "" }
+      - { run_id: "kata_strong", tool: "kata", config: "strong", params: "" }
+
+  - id: "T3.2_Proc_Cmdline"
+    description: "Read host process cmdlines via /proc"
+    payload_cmd: "head -n 5 /proc/1/cmdline 2>&1 | tr '\\0' ' '"
+    validation:
+      strategy: "cmdline_leak"
+      params:
+        host_cmdline_patterns:
+          - "systemd"
+          - "/sbin/init"
+    runs:
+      - { run_id: "docker_weak", tool: "docker", config: "weak", params: "" }
+      - { run_id: "docker_pidns", tool: "docker", config: "strong", params: "" }
+      - { run_id: "gvisor_strong", tool: "gvisor", config: "strong", params: "" }
+
+  - id: "T3.3_Kernel_Module_Load"
+    description: "Attempt to load kernel module"
+    payload_cmd: "insmod /tmp/fake_module.ko 2>&1 || modprobe dummy 2>&1"
+    validation:
+      strategy: "expect_fail"
+      params:
+        allowed_errors: ["Operation not permitted", "Could not insert module", "No such file"]
+    runs:
+      - { run_id: "docker_weak", tool: "docker", config: "weak", params: "--cap-add=SYS_MODULE" }
+      - { run_id: "docker_strong", tool: "docker", config: "strong", params: "" }
+      - { run_id: "gvisor_strong", tool: "gvisor", config: "strong", params: "" }
+
+  - id: "T3.4_Sysctl_Read"
+    description: "Read kernel parameters via sysctl"
+    payload_cmd: "sysctl kernel.hostname kernel.domainname 2>&1"
+    validation:
+      strategy: "sysctl_isolation"
+      params:
+        check_host_leak: true
+        host_hostname_pattern: "isolation-bench-vm"  # Your VM hostname
+    runs:
+      - { run_id: "docker_weak", tool: "docker", config: "weak", params: "" }
+      - { run_id: "docker_uts", tool: "docker", config: "strong", params: "-h isolated-container" }
+      - { run_id: "gvisor_strong", tool: "gvisor", config: "strong", params: "" }
+
+  # ========================================
+  # CATEGORY 4: NETWORK ISOLATION
+  # ========================================
+  
+  - id: "T4.1_Network_Sniffing"
+    description: "Packet capture on host network"
+    payload_cmd: "timeout 5 tcpdump -i any -c 10 2>&1 || true"
+    validation:
+      strategy: "network_sniffing"
+      params:
+        host_traffic_patterns:
+          - 'STP 802\.1d'
+          - 'enp\d+s\d+'
+          - 'ens\d+'
+    runs:
+      - { run_id: "docker_weak", tool: "docker", config: "weak", params: "--net=host --cap-add=NET_ADMIN --cap-add=NET_RAW" }
+      - { run_id: "docker_strong", tool: "docker", config: "strong", params: "" }
+      - { run_id: "gvisor_strong", tool: "gvisor", config: "strong", params: "" }
+
+  - id: "T4.2_Port_Scan"
+    description: "Port scanning host network"
+    payload_cmd: "/bin/port_scanner 127.0.0.1 22 80 443"
+    validation:
+      strategy: "network_behavior"
+      params:
+        expect_network_access: false  # In isolated network
+        detect_patterns: ["Connection refused", "No route to host"]
+    runs:
+      - { run_id: "docker_isolated", tool: "docker", config: "strong", params: "--network=none" }
+      - { run_id: "docker_bridge", tool: "docker", config: "weak", params: "" }
+      - { run_id: "gvisor_default", tool: "gvisor", config: "strong", params: "" }
+
+  - id: "T4.3_Raw_Socket"
+    description: "Create raw sockets for packet crafting"
+    payload_cmd: "/bin/raw_socket_test"
+    validation:
+      strategy: "capability_check"
+      params:
+        blocked_capabilities: ["CAP_NET_RAW", "CAP_NET_ADMIN"]
+        expect_failure: true
+        failure_keywords: ["Operation not permitted", "Permission denied"]
+    runs:
+      - { run_id: "docker_weak", tool: "docker", config: "weak", params: "--cap-add=NET_RAW" }
+      - { run_id: "docker_strong", tool: "docker", config: "strong", params: "--cap-drop=ALL" }
+      - { run_id: "gvisor_strong", tool: "gvisor", config: "strong", params: "" }
+
+  - id: "T4.4_ARP_Spoofing"
+    description: "ARP spoofing attempt on container network"
+    payload_cmd: "/bin/arp_spoof 2>&1"
+    validation:
+      strategy: "expect_fail"
+      params:
+        allowed_errors: ["Operation not permitted", "No such device", "Permission denied"]
+    runs:
+      - { run_id: "docker_strong", tool: "docker", config: "strong", params: "" }
+      - { run_id: "gvisor_strong", tool: "gvisor", config: "strong", params: "" }
+
+  # ========================================
+  # CATEGORY 5: IPC & NAMESPACE ISOLATION
+  # ========================================
+  
+  - id: "T5.1_Shared_Memory"
+    description: "Access to host shared memory segments"
+    payload_cmd: "ipcs -m 2>&1 | head -20"
+    validation:
+      strategy: "ipc_isolation"
+      params:
+        expect_empty: true  # Isolated IPC namespace should be empty
+        host_leak_patterns: ["0x[0-9a-f]{8}"]  # Hex shared mem IDs
+    runs:
+      - { run_id: "docker_weak", tool: "docker", config: "weak", params: "--ipc=host" }
+      - { run_id: "docker_strong", tool: "docker", config: "strong", params: "" }
+      - { run_id: "gvisor_strong", tool: "gvisor", config: "strong", params: "" }
+
+  - id: "T5.2_UTS_Namespace"
+    description: "Hostname isolation via UTS namespace"
+    payload_cmd: "hostname && cat /proc/sys/kernel/hostname"
+    validation:
+      strategy: "uts_isolation"
+      params:
+        host_hostname: "isolation-bench-vm"
+        expect_different: true
+    runs:
+      - { run_id: "docker_weak", tool: "docker", config: "weak", params: "--uts=host" }
+      - { run_id: "docker_strong", tool: "docker", config: "strong", params: "-h container-isolated" }
+      - { run_id: "gvisor_strong", tool: "gvisor", config: "strong", params: "" }
+
+  - id: "T5.3_Unix_Socket_Escape"
+    description: "Access host Unix sockets (Docker socket escape)"
+    payload_cmd: "ls -la /var/run/docker.sock 2>&1 && echo 'SOCKET_EXISTS' || echo 'NO_SOCKET'"
+    validation:
+      strategy: "socket_isolation"
+      params:
+        dangerous_sockets: ["/var/run/docker.sock", "/var/run/containerd.sock"]
+        expect_no_access: true
+    runs:
+      - { run_id: "docker_weak", tool: "docker", config: "weak", params: "-v /var/run/docker.sock:/var/run/docker.sock" }
+      - { run_id: "docker_strong", tool: "docker", config: "strong", params: "" }
+      - { run_id: "gvisor_strong", tool: "gvisor", config: "strong", params: "" }
+
+  # ========================================
+  # CATEGORY 6: SYSCALL & SECCOMP
+  # ========================================
+  
+  - id: "T6.1_Reboot_Syscall"
+    description: "Attempt to reboot system"
+    payload_cmd: "/bin/reboot_attempt"
+    validation:
+      strategy: "expect_fail"
+      params:
+        allowed_errors: ["Operation not permitted", "Function not implemented"]
+    runs:
+      - { run_id: "docker_noseccomp", tool: "docker", config: "weak", params: "--security-opt seccomp=unconfined" }
+      - { run_id: "docker_seccomp", tool: "docker", config: "strong", params: "" }
+      - { run_id: "gvisor_strong", tool: "gvisor", config: "strong", params: "" }
+
+  - id: "T6.2_Clock_Settime"
+    description: "Attempt to modify system time"
+    payload_cmd: "date -s '2030-01-01 00:00:00' 2>&1"
+    validation:
+      strategy: "expect_fail"
+      params:
+        allowed_errors: ["Operation not permitted", "Invalid argument"]
+    runs:
+      - { run_id: "docker_weak", tool: "docker", config: "weak", params: "--cap-add=SYS_TIME" }
+      - { run_id: "docker_strong", tool: "docker", config: "strong", params: "" }
+      - { run_id: "gvisor_strong", tool: "gvisor", config: "strong", params: "" }
+
+  - id: "T6.3_Ptrace_Attach"
+    description: "Attempt to ptrace host processes"
+    payload_cmd: "/bin/ptrace_test 1"  # Try to attach to PID 1
+    validation:
+      strategy: "expect_fail"
+      params:
+        allowed_errors: ["Operation not permitted", "No such process"]
+    runs:
+      - { run_id: "docker_weak", tool: "docker", config: "weak", params: "--cap-add=SYS_PTRACE --pid=host" }
+      - { run_id: "docker_strong", tool: "docker", config: "strong", params: "" }
+      - { run_id: "gvisor_strong", tool: "gvisor", config: "strong", params: "" }
+
+  # ========================================
+  # CATEGORY 7: ADVANCED ESCAPE ATTEMPTS
+  # ========================================
+  
+  - id: "T7.1_Chroot_Escape"
+    description: "Classic chroot escape attempt"
+    payload_cmd: "/bin/chroot_escape"
+    validation:
+      strategy: "expect_fail"
+      params:
+        allowed_errors: ["Operation not permitted", "No such file", "Permission denied"]
+    runs:
+      - { run_id: "docker_strong", tool: "docker", config: "strong", params: "" }
+      - { run_id: "gvisor_strong", tool: "gvisor", config: "strong", params: "" }
+      - { run_id: "nsjail_strong", tool: "nsjail", config: "strong", params: "" }
+
+  - id: "T7.2_Cgroup_Write"
+    description: "Attempt to modify cgroup limits from inside"
+    payload_cmd: "echo 9999999 > /sys/fs/cgroup/memory/memory.limit_in_bytes 2>&1"
+    validation:
+      strategy: "expect_fail"
+      params:
+        allowed_errors: ["Permission denied", "Read-only file system", "No such file"]
+    runs:
+      - { run_id: "docker_weak", tool: "docker", config: "weak", params: "" }
+      - { run_id: "docker_strong", tool: "docker", config: "strong", params: "" }
+      - { run_id: "gvisor_strong", tool: "gvisor", config: "strong", params: "" }
+
+  - id: "T7.3_Notify_On_Release"
+    description: "CVE-2022-0492 style cgroup escape (notify_on_release)"
+    payload_cmd: "/bin/cgroup_escape"
+    validation:
+      strategy: "expect_fail"
+      params:
+        allowed_errors: ["Permission denied", "Operation not permitted", "No such file"]
+    runs:
+      - { run_id: "docker_weak", tool: "docker", config: "weak", params: "--privileged" }
+      - { run_id: "docker_strong", tool: "docker", config: "strong", params: "" }
+      - { run_id: "gvisor_strong", tool: "gvisor", config: "strong", params: "" }
+
+  # ========================================
+  # CATEGORY 8: STRESS & STABILITY
+  # ========================================
+  
+  - id: "T8.1_Rapid_Process_Spawn"
+    description: "Rapid process creation/destruction (stress test)"
+    payload_cmd: "/bin/process_thrash 1000"  # Spawn 1000 processes quickly
+    validation:
+      strategy: "stability_check"
+      params:
+        expect_completion: true
+        max_duration_s: 20
+        check_for_crashes: true
+    runs:
+      - { run_id: "docker_baseline", tool: "docker", config: "strong", params: "--pids-limit=1000" }
+      - { run_id: "gvisor_baseline", tool: "gvisor", config: "strong", params: "" }
+
+  - id: "T8.2_File_Descriptor_Exhaustion"
+    description: "Open file descriptor limits"
+    payload_cmd: "/bin/fd_bomb 5000"  # Try to open 5000 FDs
+    validation:
+      strategy: "resource_limit"
+      params:
+        expect_hit_limit: true
+        limit_keywords: ["Too many open files", "Resource temporarily unavailable"]
+    runs:
+      - { run_id: "docker_unlimited", tool: "docker", config: "weak", params: "" }
+      - { run_id: "docker_limited", tool: "docker", config: "strong", params: "--ulimit nofile=1024:1024" }
+
+  - id: "T8.3_Signal_Flood"
+    description: "Signal handling stress test"
+    payload_cmd: "/bin/signal_storm 5"  # 5 seconds of signal spam
+    validation:
+      strategy: "standard"
+    runs:
+      - { run_id: "docker_baseline", tool: "docker", config: "strong", params: "" }
+      - { run_id: "gvisor_baseline", tool: "gvisor", config: "strong", params: "" }
