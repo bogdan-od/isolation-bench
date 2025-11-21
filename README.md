@@ -175,7 +175,7 @@ paramiko
 
 ### 1. Clone Repository
 ```bash
-git clone https://github.com/bogdan-od/IsolationBench.git
+git clone https://github.com/bogdan-od/isolation-bench.git
 cd IsolationBench
 ```
 
@@ -570,8 +570,8 @@ This project is licensed under the **GNU General Public License v3.0** - see the
 
 ## 📞 Contact
 
-- **Issues**: [GitHub Issues](https://github.com/bogdan-od/IsolationBench/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/bogdan-od/IsolationBench/discussions)
+- **Issues**: [GitHub Issues](https://github.com/bogdan-od/isolation-bench/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/bogdan-od/isolation-bench/discussions)
 
 ---
 

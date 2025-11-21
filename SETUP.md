@@ -452,6 +452,6 @@ cat results/summary.md
 
 ## Getting Help
 
-- Check [GitHub Issues](https://github.com/bogdan-od/IsolationBench/issues)
+- Check [GitHub Issues](https://github.com/bogdan-od/isolation-bench/issues)
 - Review error logs in `results/`
 - Ensure all prerequisites are installed
