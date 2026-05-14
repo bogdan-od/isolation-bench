@@ -16,14 +16,14 @@ class SystemMonitor:
             'cpu': [],
             'mem': [],
             'pids': [],
-            'threads': [],          # NEW
-            'fds': [],              # NEW
-            'io_read': [],          # NEW
-            'io_write': [],         # NEW
-            'net_sent': [],         # NEW
-            'net_recv': [],         # NEW
-            'ctx_switches_vol': [], # NEW: Voluntary context switches
-            'ctx_switches_invol': [] # NEW: Involuntary context switches
+            'threads': [],
+            'fds': [],    
+            'io_read': [],
+            'io_write': [],
+            'net_sent': [],
+            'net_recv': [],
+            'ctx_switches_vol': [], # Voluntary context switches
+            'ctx_switches_invol': [] # Involuntary context switches
         }
         self.thread = None
         self.baseline_io = None     # For delta calculation

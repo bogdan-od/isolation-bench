@@ -22,7 +22,7 @@ class ValidationStrategy(ABC):
         """Returns: 'SUCCESS', 'FAILURE', 'TIMEOUT', 'PARTIAL'"""
         pass
 
-# ==================== Core Strategies ====================
+# --- Core Strategies ---
 
 class StandardExecutionStrategy(ValidationStrategy):
     """Normal execution - expect clean exit code 0"""
@@ -60,7 +60,7 @@ class ExpectFailStrategy(ValidationStrategy):
         log("Command succeeded when it should have been blocked", "ERROR")
         return 'FAILURE'
 
-# ==================== Filesystem & Device Strategies ====================
+# --- Filesystem & Device Strategies ---
 
 class DeviceIsolationStrategy(ValidationStrategy):
     """
@@ -145,7 +145,7 @@ class CapabilityCheckStrategy(ValidationStrategy):
             else:
                 return 'SUCCESS'
 
-# ==================== Kernel & Proc Strategies ====================
+# --- Kernel & Proc Strategies ---
 
 class KernelVersionStrategy(ValidationStrategy):
     """
@@ -343,7 +343,7 @@ class SysctlIsolationStrategy(ValidationStrategy):
         
         return 'PARTIAL'
 
-# ==================== Network Strategies ====================
+# --- Network Strategies ---
 
 class NetworkSniffingStrategy(ValidationStrategy):
     """
@@ -435,7 +435,7 @@ class NetworkBehaviorStrategy(ValidationStrategy):
             else:
                 return 'PARTIAL'
 
-# ==================== IPC & Namespace Strategies ====================
+# --- IPC & Namespace Strategies ---
 
 class IPCIsolationStrategy(ValidationStrategy):
     """
@@ -543,7 +543,7 @@ class SocketIsolationStrategy(ValidationStrategy):
             else:
                 return 'SUCCESS'
 
-# ==================== Resource & Performance Strategies ====================
+# --- Resource & Performance Strategies ---
 
 class ContainmentPidsStrategy(ValidationStrategy):
     """Resource containment - PIDs must not explode"""
@@ -761,7 +761,7 @@ class StabilityCheckStrategy(ValidationStrategy):
         log("Stability test passed", "DEBUG")
         return 'SUCCESS'
 
-# ==================== Composite Strategy ====================
+# --- Composite Strategy ---
 
 class CompositeStrategy(ValidationStrategy):
     """Run multiple checks and aggregate results"""
@@ -803,7 +803,7 @@ class CompositeStrategy(ValidationStrategy):
         else:
             return 'PARTIAL'
 
-# ==================== Registry ====================
+# --- Registry ---
 
 STRATEGY_REGISTRY = {
     'standard': StandardExecutionStrategy(),
@@ -828,7 +828,7 @@ STRATEGY_REGISTRY = {
     'composite': CompositeStrategy(),
 }
 
-# ==================== Main Validator ====================
+# --- Main Validator ---
 
 class TestValidator:
     """Factory for validation strategies"""
